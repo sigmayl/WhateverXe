@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.1
+
+- On Sequoia, defer HDMI/DisplayPort audio EDID events while the selected AppleHDA codec is uninitialized, preventing a null-codec panic. Retain exact driver UUID, instruction-layout and physical-device ownership checks.
+
 ## 0.7.0
 
 Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphics/releases) package with this update.

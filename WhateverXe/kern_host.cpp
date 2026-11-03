@@ -2,6 +2,7 @@
 #include "kern_host.hpp"
 #include "kern_xelp_device.hpp"
 #include "kern_xe_data_access.hpp"
+#include "kern_hdmi_audio.hpp"
 #include "kern_backlight_profile.hpp"
 #include <Headers/kern_api.hpp>
 #include <Headers/kern_iokit.hpp>
@@ -24,6 +25,7 @@ void XeHost::init() {
  lilu.onKextLoadForce(&backlight);
  xe.init();
  XeDataAccess::init();
+ XeHDMIAudio::init();
 }
 void XeHost::processKernel(KernelPatcher &patcher) {
  auto info=DeviceInfo::create();if(!info)return;
@@ -51,6 +53,7 @@ void XeHost::processKernel(KernelPatcher &patcher) {
                 profile.family==XELP::Family::AlderLakeP))xe.processKernel(patcher,info);
  if(active) {
   XeDataAccess::processKernel(patcher);
+  XeHDMIAudio::processKernel(profile,info->audioBuiltinAnalog,info->audioBuiltinDigital);
   // Xe admission reads physical PCI identity. Do not install WEG's ID spoof hooks.
   // WEG normalizes the ME device discovered by Lilu for Apple's name matching.
   if(auto mei=info->managementEngine) {
@@ -83,6 +86,7 @@ void XeHost::processKext(KernelPatcher &patcher,size_t index,mach_vm_address_t a
   }
   return;
  }
+ if(XeHDMIAudio::processKext(patcher,index,address,size))return;
  if(XeDataAccess::processKext(patcher,index,address,size))return;
  if(graphics.loadIndex==index) {
   gIOFBVerboseBootPtr=patcher.solveSymbol<uint8_t *>(index,"__ZL16gIOFBVerboseBoot",address,size);

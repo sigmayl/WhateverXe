@@ -30,7 +30,7 @@ struct IOPCIDevice {
 #define OSDynamicCast(type,p) dynamic_cast<type *>(p)
 struct DeviceInfo {
  enum class FirmwareVendor{Apple,Other};FirmwareVendor firmwareVendor=FirmwareVendor::Other;
- IOPCIDevice *videoBuiltin=nullptr,*managementEngine=nullptr;bool reportedFramebufferIsConnectorLess=false;
+ IOPCIDevice *videoBuiltin=nullptr,*managementEngine=nullptr,*audioBuiltinAnalog=nullptr,*audioBuiltinDigital=nullptr;bool reportedFramebufferIsConnectorLess=false;
  static DeviceInfo value;static DeviceInfo *create(){return &value;}static void deleter(DeviceInfo *){events.push_back(9);}
 };DeviceInfo DeviceInfo::value;
 namespace WIOKit {bool awaitPublishing(IOPCIDevice *){events.push_back(1);published=publish;return publish;}void renameDevice(IOPCIDevice *device,const char *name){device->name=name;++device->renames;events.push_back(5);}}
@@ -45,6 +45,7 @@ struct KernelPatcher {
 };
 // The optional observer is inactive in this host-publication fixture.
 namespace XeDataAccess {bool processKext(KernelPatcher&,size_t,mach_vm_address_t,size_t){return false;}void processKernel(KernelPatcher &){assert(published);events.push_back(7);}}
+namespace XeHDMIAudio {bool processKext(KernelPatcher&,size_t,mach_vm_address_t,size_t){return false;}void processKernel(const XELP::Profile&,IOPCIDevice*,IOPCIDevice*){assert(published);}}
 struct Graphics {size_t loadIndex=4;bool off=false;void switchOff(){off=true;}} graphics;
 struct {size_t loadIndex=5;}backlight;
 struct XeHost {

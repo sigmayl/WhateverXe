@@ -82,6 +82,7 @@ These settings are unnecessary at 96MB and do not increase firmware-allocated me
 
 - Add `SSDT-PNLF` for internal-display brightness control.
 - GPU selection is automatic; a `device-id` override is normally unnecessary.
+- On Sequoia, HDMI/DisplayPort audio initialization is guarded automatically for qualified AppleHDA images; no boot argument is required.
 - Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P select tiling automatically. Do not use `-yTileDisable`; `AAPL,GfxYTile` is unnecessary.
 
 ## Tested features and known issues
