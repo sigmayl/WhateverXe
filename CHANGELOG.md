@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.2
+
+Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphics/releases) package. The optional HEVC encoder requires the [VA shim](media/va_shim/README.md); bitrate control also requires the [paired firmware runtime](media/firmware_runtime/README.md).
+
+### Added
+
+- Add experimental 8-bit and Main10 HEVC hardware encoding through 4K on the supported Sequoia 15.8.2 encoder layout, including single-reference inter prediction, CBR, VBR and adaptive quality control, following [Intel media-driver](https://github.com/intel/media-driver).
+- Add an optional GuC/HuC firmware runtime for Raptor Lake-S `8086:A780`, revision 4, on Sequoia 15.8.2, following Linux [i915](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/gpu/drm/i915/gt/uc). The runtime checks the exact WhateverXe image used at startup.
+
+### Fixed
+
+- Preserve native H.264 hardware encoder initialization when an optional image converter is unavailable on Sequoia 15.8.2.
+- Fix high-resolution HEVC hangs and surface addressing with GPU pitches, consistent coded dimensions and resolution-dependent PAK/CU buffers. Preserve the selected visible resolution with conformance-window signaling.
+- Preserve HEVC keyframe boundaries and native frame feedback, match adaptive QP groups between the PPS and hardware, and enforce bitrate windows across startup and drained rate changes. Avoid the native all-intra VBR zero-interval failure and stop affected contexts after failed submissions. QP-group setup follows [FFmpeg VAAPI HEVC](https://github.com/FFmpeg/FFmpeg/blob/master/libavcodec/vaapi_encode_h265.c).
+- Keep guarded Sequoia MMIO initialization compatible with qualified servicing kernels by checking the resolved pmap call target.
+
 ## 0.6.1
 
 Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphics/releases) package.

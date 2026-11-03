@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build the standalone x86_64 Lilu plugin and donor symbol provider."""
-import argparse,hashlib,json,plistlib,subprocess
+import argparse,hashlib,json,plistlib,struct,subprocess
 from pathlib import Path
 from check_compat_version import check as check_compat_version
 from check_boot_stack import check_objects as check_boot_stack
@@ -14,12 +14,21 @@ def main():
  p.add_argument('--release',action='store_true')
  a=p.parse_args();out=a.output.resolve();out.mkdir(parents=True,exist_ok=True)
  sdk=a.sdk.resolve();lilu=a.lilu.resolve()/'Contents/Resources'
+ # LLVM can lower Mach-O global destructors through userspace __cxa_atexit
+ # even with the kernel C++ ABI selected. Keep kernel module termination
+ # sections on compilers that provide the explicit backend switch.
+ backend_help=subprocess.run(['xcrun','clang++','-x','c++','-c','/dev/null',
+                              '-o','/dev/null','-mllvm','--help-hidden'],
+                             capture_output=True,text=True,check=True)
+ kernel_dtor_flag='disable-atexit-based-global-dtor-lowering'
+ kernel_dtor_options=['-mllvm','-'+kernel_dtor_flag] if kernel_dtor_flag in backend_help.stdout+backend_help.stderr else []
  base=['xcrun','clang++','-arch','x86_64','-std=c++17',('-O2' if a.release else '-O0'),'-g','-mkernel','-fapple-kext','-fno-exceptions','-fno-rtti','-fno-stack-protector','-fno-builtin','-fno-asynchronous-unwind-tables','-mno-red-zone','-fstack-usage','-nostdinc','-DKERNEL','-DKERNEL_PRIVATE','-D__APPLE__','-D__MACH__','-I'+str(sdk/'Headers'),'-I'+str(lilu),'-I'+str(ROOT/'WhateverXe'),'-mmacosx-version-min=10.15','-Wall','-Wextra','-Wno-unused-parameter','-Wno-deprecated-declarations','-Wno-vla','-Wno-ossharedptr-misuse']
  # Keep build-machine paths out of distributed binaries and debug symbols.
  base+=['-fdebug-compilation-dir=.', '-ffile-prefix-map='+str(ROOT)+'=/WhateverXe',
         '-ffile-prefix-map='+str(sdk)+'=/MacKernelSDK', '-ffile-prefix-map='+str(lilu)+'=/Lilu']
+ base+=kernel_dtor_options
  manifest={}
- for name,version,sources in [('WhateverXe','0.6.1',sorted((ROOT/'WhateverXe').glob('*.cpp'))+[lilu/'Library/plugin_start.cpp']),('AppleIntelTGLCompat','0.6.1',[ROOT/'AppleIntelTGLCompat/AppleIntelTGLCompat.cpp'])]:
+ for name,version,sources in [('WhateverXe','0.6.2',sorted((ROOT/'WhateverXe').glob('*.cpp'))+[lilu/'Library/plugin_start.cpp']),('AppleIntelTGLCompat','0.6.2',[ROOT/'AppleIntelTGLCompat/AppleIntelTGLCompat.cpp'])]:
   bundle=out/(name+'.kext')/'Contents';(bundle/'MacOS').mkdir(parents=True,exist_ok=True);objdir=out/name;objdir.mkdir(exist_ok=True)
   objects=[]
   for source in sources:
@@ -36,6 +45,8 @@ def main():
    (out/'boot-stack.json').write_text(json.dumps(check_boot_stack(objects),indent=2)+'\n')
   exe=bundle/'MacOS'/name
   run(['xcrun','ld','-arch','x86_64','-kext','-undefined','dynamic_lookup','-no_fixup_chains','-macos_version_min',('10.6' if name=='WhateverXe' else '10.15'),'-o',exe,*objects,sdk/'Library/x86_64/libkmod.a'])
+  header=struct.unpack_from('<8I',exe.read_bytes())
+  assert (header[0],header[1],header[3])==(0xfeedfacf,0x01000007,0xb), 'linker did not produce an x86_64 Mach-O kext'
   libs={x:'10.0.0' for x in ['com.apple.kpi.bsd','com.apple.kpi.dsep','com.apple.kpi.iokit','com.apple.kpi.libkern','com.apple.kpi.mach','com.apple.kpi.unsupported']};libs['com.apple.iokit.IOPCIFamily']='1.1'
   ident='org.b00t0x.'+name
   info=dict(CFBundleIdentifier=ident,CFBundleExecutable=name,CFBundleName=name,CFBundlePackageType='KEXT',CFBundleVersion=version,CFBundleShortVersionString=version,OSBundleCompatibleVersion=version,OSBundleRequired='Root',OSBundleLibraries=libs)
@@ -59,7 +70,7 @@ def main():
   if name=='WhateverXe':
    assert ' __realmain' in symbols and ' __start' in symbols
    unresolved=subprocess.check_output(['xcrun','nm','-u',str(exe)],text=True)
-   assert not any(x in unresolved for x in ['chkstk_darwin','___memcpy_chk','___memmove_chk','DispatchE5IORPC']), 'userspace/DriverKit ABI imported into kernel plugin'
+   assert not any(x in unresolved for x in ['chkstk_darwin','___memcpy_chk','___memmove_chk','DispatchE5IORPC','atexit']), 'userspace/DriverKit ABI imported into kernel plugin'
    assert not any(x in unresolved for x in ['__ZN2XE','__ZN6XeHost','__ZN11DVMTCalcFix']), 'unresolved local implementation'
   manifest[name]={'identifier':ident,'version':version,'configuration':'RELEASE' if a.release else 'DEBUG','sha256':hashlib.sha256(exe.read_bytes()).hexdigest(),'source_sha256':{str(s.relative_to(ROOT)) if s.is_relative_to(ROOT) else 'Lilu/'+str(s.relative_to(lilu)):hashlib.sha256(s.read_bytes()).hexdigest() for s in sources}}
   if name=='AppleIntelTGLCompat':manifest[name]['personality_sha256']=hashlib.sha256((ROOT/'AppleIntelTGLCompat/GraphicsPolicy.plist').read_bytes()).hexdigest()

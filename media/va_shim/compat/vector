@@ -1,0 +1,163 @@
+#pragma once
+// Minimal std::vector for the cross-built shim. The media command builders use
+// a small subset of the interface; this implementation keeps the shim free of
+// a C++ runtime dependency.
+#include <stddef.h>
+
+extern "C" void *malloc(size_t) noexcept;
+extern "C" void free(void *) noexcept;
+extern "C" void abort(void) noexcept;
+
+inline void *operator new(size_t, void *pointer) noexcept { return pointer; }
+inline void *operator new[](size_t, void *pointer) noexcept { return pointer; }
+inline void operator delete(void *, void *) noexcept {}
+inline void operator delete[](void *, void *) noexcept {}
+
+namespace std {
+
+template <typename T>
+class vector {
+public:
+    using iterator = T *;
+    using const_iterator = const T *;
+
+    vector() = default;
+    explicit vector(size_t count) { resize(count); }
+    vector(size_t count, const T &value) { resize(count, value); }
+
+    vector(const vector &other) {
+        reserve(other.size_);
+        for (size_t i = 0; i < other.size_; ++i)
+            new (&data_[i]) T(other.data_[i]);
+        size_ = other.size_;
+    }
+
+    vector(vector &&other) noexcept
+        : data_(other.data_), size_(other.size_), capacity_(other.capacity_) {
+        other.data_ = nullptr;
+        other.size_ = 0;
+        other.capacity_ = 0;
+    }
+
+    ~vector() {
+        clear();
+        free(data_);
+    }
+
+    vector &operator=(const vector &other) {
+        if (this == &other)
+            return *this;
+        clear();
+        reserve(other.size_);
+        for (size_t i = 0; i < other.size_; ++i)
+            new (&data_[i]) T(other.data_[i]);
+        size_ = other.size_;
+        return *this;
+    }
+
+    vector &operator=(vector &&other) noexcept {
+        if (this == &other)
+            return *this;
+        clear();
+        free(data_);
+        data_ = other.data_;
+        size_ = other.size_;
+        capacity_ = other.capacity_;
+        other.data_ = nullptr;
+        other.size_ = 0;
+        other.capacity_ = 0;
+        return *this;
+    }
+
+    size_t size() const { return size_; }
+    bool empty() const { return size_ == 0; }
+    size_t capacity() const { return capacity_; }
+    T *data() { return data_; }
+    const T *data() const { return data_; }
+
+    T &operator[](size_t index) { return data_[index]; }
+    const T &operator[](size_t index) const { return data_[index]; }
+
+    iterator begin() { return data_; }
+    iterator end() { return data_ + size_; }
+    const_iterator begin() const { return data_; }
+    const_iterator end() const { return data_ + size_; }
+
+    void clear() {
+        for (size_t i = 0; i < size_; ++i)
+            data_[i].~T();
+        size_ = 0;
+    }
+
+    void reserve(size_t count) {
+        if (count <= capacity_)
+            return;
+        T *next = static_cast<T *>(malloc(count * sizeof(T)));
+        if (!next)
+            abort();
+        for (size_t i = 0; i < size_; ++i) {
+            new (&next[i]) T(static_cast<T &&>(data_[i]));
+            data_[i].~T();
+        }
+        free(data_);
+        data_ = next;
+        capacity_ = count;
+    }
+
+    void resize(size_t count) {
+        if (count < size_) {
+            for (size_t i = count; i < size_; ++i)
+                data_[i].~T();
+            size_ = count;
+            return;
+        }
+        if (count > capacity_)
+            reserve(count);
+        for (size_t i = size_; i < count; ++i)
+            new (&data_[i]) T();
+        size_ = count;
+    }
+
+    void resize(size_t count, const T &value) {
+        if (count < size_) {
+            for (size_t i = count; i < size_; ++i)
+                data_[i].~T();
+            size_ = count;
+            return;
+        }
+        if (count > capacity_)
+            reserve(count);
+        for (size_t i = size_; i < count; ++i)
+            new (&data_[i]) T(value);
+        size_ = count;
+    }
+
+    void push_back(const T &value) {
+        if (size_ == capacity_)
+            reserve(capacity_ ? capacity_ * 2 : 4);
+        new (&data_[size_]) T(value);
+        ++size_;
+    }
+
+    // The command builders only append at end().
+    template <typename It>
+    void insert(iterator position, It first, It last) {
+        const size_t index = static_cast<size_t>(position - data_);
+        const size_t count = static_cast<size_t>(last - first);
+        if (count == 0)
+            return;
+        if (index != size_)
+            abort();
+        reserve(size_ + count);
+        for (size_t i = 0; i < count; ++i)
+            new (&data_[size_ + i]) T(first[i]);
+        size_ += count;
+    }
+
+private:
+    T *data_ {nullptr};
+    size_t size_ {0};
+    size_t capacity_ {0};
+};
+
+}

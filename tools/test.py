@@ -9,6 +9,8 @@ python_tests=['framebuffer_training_registration','framebuffer_common','display1
 jobs=[(p.stem,['clang++','-std=c++17','-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer','-I'+str(R/'WhateverXe'),str(p),'-o',str(O/p.stem)],[str(O/p.stem)]) for p in sorted((R/'tests').glob('*.cpp')) if not p.stem.endswith('_fixture')]
 python_tests += ['tgl_power_fuses', 'display13_boot_aux', 'display13_aux', 'display13_sst', 'display13_combo_clock', 'adls_panel_pwm', 'display13_panel_runtime', 'tgl_panel_timing', 'backlight_adapter', 'tgl_panel_power', 'tgl_edp_transcoder', 'tgl_training_pattern', 'tgl_combo_pll_write', 'tgl_sink_framing', 'tgl_combo_aux_gate', 'tgl_combo_signal_guard', 'tgl_combo_aux_lifetime', 'tgl_iosurface_compression', 'tgl_panel_depth_route', 'display13_tiling']
 python_tests += ['fatal_log_storage','boot_stack_limits','xelp_combo_clock_guard','display13_tc_preparation','display13_retirement','display13_port_wait','display13_agdc','display13_training_frontend','framebuffer_donor_runtime','compat_bundle_version']
+python_tests += ['sequoia_pmap_guard']
+python_tests += ['hevc_runtime']
 jobs += [(n,[sys.executable,str(R/'tests'/(n+'.py'))],None) for n in python_tests]
 if a.donor:jobs += [('display13_agdc_native',[sys.executable,str(R/'tests/display13_agdc.py'),str(a.donor.resolve())],None)]
 if a.donor:jobs += [('adls_ddi_power_native',[sys.executable,str(R/'tests/adls_ddi_power_native.py'),str(a.donor.resolve())],None)]

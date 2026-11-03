@@ -12,7 +12,13 @@ a=argparse.ArgumentParser();a.add_argument('--kernel',type=Path);a=a.parse_args(
 bridges='\n'.join(re.search(r'extern "C" __attribute__\(\(naked,used\)\) void tglSequoiaPmap'+kind+r'Bridge\(\) \{.*?\n\}',s,re.S)[0] for kind in ['New','Update'])
 if a.kernel:
  d=a.kernel.read_bytes()
- assert hashlib.sha256(d).hexdigest()=='fb8da6196bcc6828d0ea9c750239a9115854429cb24c1bb88437c66546019faa'
+ kernels={
+  'fb8da6196bcc6828d0ea9c750239a9115854429cb24c1bb88437c66546019faa': (0xffffff800042c890,0xffffff80003ffc50),
+  '6f4a2b3811ab220464582e7d51bcf46551f4846de9c71205b11d1b124b85bc10': (0xffffff800042beb0,0xffffff80003ff240),
+ }
+ digest=hashlib.sha256(d).hexdigest()
+ assert digest in kernels, 'unqualified kernel fixture'
+ pmap,protect=kernels[digest]
  segments=[];pos=32
  for _ in range(struct.unpack_from('<I',d,16)[0]):
   command,size=struct.unpack_from('<II',d,pos)
@@ -27,13 +33,15 @@ if a.kernel:
  # incorrect call-site offset cannot be hidden by a separate fixture offset.
  sites={}
  for base,offset,name in re.findall(r'!memcmp\(reinterpret_cast<void \*>\((fn|protect)(\+0x[0-9A-Fa-f]+)?\),([A-Za-z]+),sizeof',block):
-  sites[name]=(0 if base=='fn' else 0xffffff80003ffc50-0xffffff800042c890)+(int(offset[1:],16) if offset else 0)
- assert len(sites)==9,sites
+  sites[name]=(0 if base=='fn' else protect-pmap)+(int(offset[1:],16) if offset else 0)
+ assert len(sites)==8,sites
  for name,offset in sites.items():
   values=re.search(r'const uint8_t '+name+r'\[\] \{([^}]+)\}',block)[1]
   values=bytes(int(v.strip(),0) for v in values.split(','))
-  assert read(0xffffff800042c890+offset,len(values))==values,name
- print('PASS: exact kernel SHA and all 9 runtime guards')
+  assert read(pmap+offset,len(values))==values,name
+ call=read(protect+0xCA,5)
+ assert call[0]==0xE8 and protect+0xCF+struct.unpack('<i',call[1:])[0]==pmap
+ print('PASS: exact kernel SHA, all 8 instruction guards and resolved pmap call target')
 cpp=r'''#include <stdint.h>
 #include <initializer_list>
 #include <string.h>

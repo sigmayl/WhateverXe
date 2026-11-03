@@ -145,6 +145,11 @@ FBの立上げ時は、任意の`-wex-noaccel`引数でAcceleratorの起動を�
 Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/P/UではGPU資源のprobeも省略し、FB独自の起動メモリ・MMIOの確認は維持します。
 未対応のDisplayバックエンドを有効にする引数ではありません。
 
+任意の`-wex-hevc-encode`引数は実験的なHEVCエンコーダーを選択し、[別途ビルドしたVA shim](media/va_shim/README.md)が必要です。
+現在の実装は8ビットまたは10ビット4:2:0のHEVCを書き出し、既定はCQP 26です。両入力形式で4Kエンコードに対応します。符号化時にパディングするため、8の倍数でない寸法でも、選択した表示解像度を維持します。既定ではイントラ画像のみを符号化し、単一参照のフレーム間予測はshimバンドルの`MacOS`ディレクトリに`WEX_HEVC_P`マーカーがある場合だけ使います。フレーム間予測を有効にしても、ネイティブエンコーダーのイントラ画像とキーフレーム境界を維持します。Main10には独立した`WEX_HEVC_MAIN10`マーカー、対応するmacOS 15.8.2エンコーダープラグインのレイアウト、およびMain10と10ビットの2プレーン入力を要求するクライアントが必要です。
+任意のCBR・VBR・適応品質制御には、独立した`WEX_HEVC_BRC`マーカー、`-wex-hevc-brc`起動引数、および対応するIntelファームウェアと起動時に使う正確なWhateverXeイメージでビルドした[WhateverXeMediaRuntime.kext](media/firmware_runtime/README.md)が必要です。
+現在のファームウェアランタイムはmacOS 15.8.2上のRaptor Lake-S `8086:A780`、リビジョン4を受け付けます。VBRはイントラのみ・単一参照の両方で指定した平均ビットレートに追従し、明示的なバイト数ウィンドウを守ります。開始直後や情報量の少ない映像では、平均ビットレートが目標と異なることがあります。BRC送信に失敗したエンコードコンテキストは、その後の送信を停止します。[shimの設定と制限](media/va_shim/README.md#configuration)を参照してください。通常の使用では実験的な起動引数を無効のままにしてください。
+
 開発時の一時診断用に `-wex-adlp-readout` を指定すると、GPUドライバの受付を閉じたままADL-Pの起動資源を採取します。対応済みハードウェアでは不要です。
 `-wex-adlp-load-only` は選択済みADL-P/RPL-Pで、FramebufferとAccelerator両方のnative probe/startを止め、GPUを初期化せずにロード段階を診断します。
 `-wex-display13-offline` はAlder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/P/Uのnative display controller初期化を有効に保ち、選択した出力を未接続として扱います。FB診断でHPD/EDIDとmode設定を切り離すための設定で、表示成立を意味しません。
@@ -162,6 +167,9 @@ Alder Lake-N / Twin LakeとAlder Lake-H/P/U / Raptor Lake-H/P/UではGPU資源�
 
 検証した機器での結果であり、すべてのGPU・ディスプレイ・アダプター・ドックでの動作を保証するものではありません。
 記載した解像度は検証範囲であり、WEXが設けた固定の解像度制限ではありません。
+
+Sequoia 15.8.2では、[VA shim](media/va_shim/README.md)が任意の画像変換機能を利用できない場合でも、標準のH.264ハードウェアエンコーダーを初期化できるようにします。
+コーデックはアプリが選択し、ソフトウェアエンコードを使用する場合もあります。
 
 ### 既知の問題と制限
 

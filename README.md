@@ -196,6 +196,28 @@ it also skips GPU resource probing while preserving the
 framebuffer's independent boot-memory and MMIO checks. It does not enable an
 otherwise unsupported display backend.
 
+The optional `-wex-hevc-encode` argument selects the experimental HEVC encoder
+and requires a [separately built VA shim](media/va_shim/README.md). The current
+path exports 8-bit or 10-bit 4:2:0 HEVC, with CQP 26 as the default. Both input
+formats support 4K encoding. Coded padding preserves the selected visible
+resolution, including dimensions that are not multiples of eight. Pictures are
+coded as intra pictures by default; single-reference inter pictures are used only when the shim bundle's
+`MacOS` directory contains the `WEX_HEVC_P` marker. Inter prediction preserves
+native intra pictures and keyframe boundaries. Main10 requires the independent
+`WEX_HEVC_MAIN10` marker, the supported macOS 15.8.2 encoder plug-in layout,
+and a client requesting Main10 with a 10-bit biplanar input. Optional CBR, VBR
+and adaptive quality control require the independent `WEX_HEVC_BRC` marker,
+`-wex-hevc-brc` boot argument and
+[WhateverXeMediaRuntime.kext](media/firmware_runtime/README.md), built with the
+supported Intel firmware and the exact WhateverXe image used at startup.
+The firmware runtime currently accepts Raptor Lake-S `8086:A780`, revision 4,
+on macOS 15.8.2. VBR follows the requested average bitrate for intra-only and
+single-reference encoding and enforces explicit byte windows. Startup and low-detail content can differ from the target average.
+Failed BRC submissions stop the affected encode context.
+See the shim's
+[configuration and limits](media/va_shim/README.md#configuration).
+Keep the experimental boot arguments disabled for normal use.
+
 Temporary development diagnostic: `-wex-adlp-readout` captures ADL-P boot resources while keeping GPU driver admission disabled. It is not required for supported hardware.
 `-wex-adlp-load-only` blocks both native framebuffer and accelerator probes/starts on a selected ADL-P/RPL-P device, for load-only diagnostics without GPU initialization.
 `-wex-display13-offline` keeps native display controller initialization enabled on Alder Lake-N / Twin Lake and Alder Lake-H/P/U / Raptor Lake-H/P/U but reports selected outputs as disconnected, isolating HPD/EDID and mode programming for framebuffer diagnostics. It does not establish display operation.
@@ -214,6 +236,10 @@ Temporary development diagnostic: `-wex-adlp-readout` captures ADL-P boot resour
 These results cover tested systems, not every GPU, display, adapter or dock.
 The listed resolutions describe test coverage; they are not a fixed resolution
 limit imposed by WEX.
+
+On Sequoia 15.8.2, the [VA shim](media/va_shim/README.md) preserves native H.264
+hardware encoder initialization when an optional image converter is unavailable.
+Applications still choose the codec and may use software encoding.
 
 ### Known issues and limits
 
