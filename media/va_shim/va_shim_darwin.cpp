@@ -20,6 +20,10 @@ extern "C" int open(const char *path, int flags, ...);
 extern "C" int close(int fd);
 extern "C" uint32_t mach_task_self_;
 extern "C" int vm_protect(uint32_t, uintptr_t, unsigned long, int, int);
+extern "C" uint64_t mach_absolute_time();
+struct MachTimebase { uint32_t numerator, denominator; };
+extern "C" int mach_timebase_info(MachTimebase *);
+extern "C" int usleep(unsigned int);
 // The encoder XPC service cannot reach the ASL client behind plain syslog();
 // Apple's compatibility entry point is what the plug-in itself uses.
 extern "C" void syslogExt(int priority, const char *format, ...)
@@ -78,6 +82,24 @@ uintptr_t gOriginalBase;
 // Set when the loaded image is the 16.0.32 build whose video-processing
 // context layout this shim knows.
 bool gKnownDriverBuild = false;
+MachTimebase gTimebase;
+
+uint64_t monotonicTime() {
+    if (!gTimebase.denominator) return 0;
+    const uint64_t ticks = mach_absolute_time();
+    return ticks / gTimebase.denominator * gTimebase.numerator +
+        (ticks % gTimebase.denominator) * gTimebase.numerator / gTimebase.denominator;
+}
+
+int32_t waitUntil(uint64_t deadline) {
+    for (;;) {
+        const uint64_t now = monotonicTime();
+        if (now >= deadline) return VaShim::StatusSuccess;
+        const uint64_t left = (deadline - now + 999) / 1000;
+        // Short sleeps tolerate interruption without relying on wall time.
+        usleep(static_cast<unsigned int>(left > 50000 ? 50000 : left));
+    }
+}
 
 int32_t hucAuthenticated() {
     if (!gKnownDriverBuild)
@@ -939,6 +961,13 @@ bool loadOriginal() {
                 dlsym(reinterpret_cast<void *>(-2), "IOAccelResourceRelease"));
         submitOps.debugMarker = hevcMarker;
         submitOps.hucAuthenticated = hucAuthenticated;
+        if (!mach_timebase_info(&gTimebase) && gTimebase.numerator && gTimebase.denominator) {
+            submitOps.monotonicTime = monotonicTime;
+            submitOps.waitUntil = waitUntil;
+        } else {
+            logMessage("monotonic clock unavailable; HEVC submission disabled");
+            return false;
+        }
         VaShim::setHevcSubmitOps(submitOps);
     } else {
         logMessage("unsupported original driver build; submission disabled");

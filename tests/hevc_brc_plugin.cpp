@@ -93,6 +93,15 @@ int main() {
         true, allocationSize, input));
     assert(input.limitFrames[0] == 31 && input.limitBits[0] == 6000000);
 
+    set(vbr, 152, float(.25));
+    assert(readRateControl(payload, base + kScheduleReturn, image.data(), true,
+        true, allocationSize, input));
+    assert(input.windowFrames == 1 && input.limitFrames[0] == 1);
+    assert(input.limitDurationNs[0] == 1010000000 && input.limitDurationNs[1] == 5000000000);
+    set(vbr, 152, float(500));
+    assert(readRateControl(payload, base + kScheduleReturn, image.data(), true,
+        true, allocationSize, input));
+    assert(input.windowFrames == 256 && input.limitFrames[0] == 256 && input.limitFrames[1] == 256);
     set(transmission, 12, uint32_t(0));
     set(vbr, 152, float(29.97));
     assert(readRateControl(payload, base + kScheduleReturn, image.data(), true,
@@ -184,7 +193,7 @@ int main() {
     assert(!readRateControl(payload, base + kScheduleReturn, image.data(), true,
         true, allocationSize, input));
     set(transmission, 12, uint32_t(1));
-    set(transmission, 32, double(10)); // exceeds the plug-in's frame window
+    set(transmission, 32, double(10)); // effective limit rate is below the requested target
     assert(!readRateControl(payload, base + kScheduleReturn, image.data(), true,
         true, allocationSize, input));
     set(transmission, 12, uint32_t(0));

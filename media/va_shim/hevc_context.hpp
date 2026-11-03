@@ -82,12 +82,15 @@ struct HevcSubmitOps {
         unsigned long size) {};
     void *(*resourceClientShared)(void *resource, void **privateOut) {};
     void (*resourceRelease)(void *resource) {};
-    // Debug markers let the encoder XPC service opt into the experimental
-    // command path without inheriting the user's shell environment.
+    // Optional diagnostics in the sandboxed encoder service.
     int32_t (*debugMarker)(const char *path) {};
     // Kernel-owned authentication/firmware-lifetime proof, checked before
     // every HuC batch. IMEM's hardware gate then verifies current readiness.
     int32_t (*hucAuthenticated)() {};
+    // Monotonic time and pacing for real byte/second windows. Tests without
+    // a clock retain the deterministic picture-count budget adapter.
+    uint64_t (*monotonicTime)() {};
+    int32_t (*waitUntil)(uint64_t deadlineNs) {};
 };
 void setHevcSubmitOps(const HevcSubmitOps &ops);
 

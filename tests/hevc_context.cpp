@@ -64,6 +64,9 @@ bool gQualityRequest;
 bool gNativeOversizedPicture;
 bool gNativeUnfittablePicture;
 bool gHucAuthenticated {true};
+uint64_t gTimedNow;
+unsigned gTimedWaits;
+bool gPacedPicture;
 
 void capture(const char *line) {
     unsigned long length = 0;
@@ -242,8 +245,10 @@ void exerciseBrcPictureData() {
 void exerciseSubmission(bool main10 = false, bool brc = false, bool authenticated = true,
     bool update = false, bool reencode = false, bool classification = false,
     bool nativeBudget = false, bool lowNativeQp = false, unsigned firmwareVbr = 0,
-    unsigned failureStage = 0, bool quality = false) {
+    unsigned failureStage = 0, bool quality = false, bool timed = false) {
     update = brc; // Software rate requests automatically run the complete BRC path.
+    gTimedNow = timed ? 1000000000 : 0;
+    gTimedWaits = 0; gPacedPicture = false;
     gMockMain10 = main10;
     gRateUpdates = update;
     gMockBrcReencode = reencode;
@@ -301,6 +306,13 @@ void exerciseSubmission(bool main10 = false, bool brc = false, bool authenticate
     };
     ops.debugMarker = nullptr; // No functional or diagnostic markers installed.
     ops.hucAuthenticated = []() -> int32_t { return gHucAuthenticated ? 1 : 0; };
+    if (timed) {
+        ops.monotonicTime = []() { return gTimedNow; };
+        ops.waitUntil = [](uint64_t deadline) -> int32_t {
+            assert(deadline > gTimedNow);gTimedNow = deadline;++gTimedWaits;
+            return StatusSuccess;
+        };
+    }
     ops.request = [](void *context, uint32_t words, uint32_t aux, void **out) -> int32_t {
         auto &m = *static_cast<MockSubmission *>(context);
         ++m.requests;
@@ -389,6 +401,7 @@ void exerciseSubmission(bool main10 = false, bool brc = false, bool authenticate
                 write32(dmem.cpuAddress, kBrcReadbackOffset + 24, m.encoder->brcSubmissionCount);
         } else {
             ++m.pictures;
+            if (gTimedNow) gTimedNow += 33333333;
             m.sliceType = 3;
             m.referenceLists = 0;
             for (unsigned i = 0; i + 12 < 8192; ++i) {
@@ -416,7 +429,7 @@ void exerciseSubmission(bool main10 = false, bool brc = false, bool authenticate
                 const auto *input = static_cast<const HevcCore::Huc::BrcUpdateDmem *>(m.encoder->scratch.dmem.cpuAddress);
                 const auto *batchOutput = static_cast<const uint32_t *>(m.encoder->scratch.secondLevel.cpuAddress);
                 const uint32_t outputQp = batchOutput ? (batchOutput[m.encoder->brcLayout.update.cmd2Offset / 4 + 27] >> 8) & 255 : 0;
-                const uint32_t bytes = gNativeUnfittablePicture ? 5000 :
+                const uint32_t bytes = gPacedPicture ? 2000 : gNativeUnfittablePicture ? 5000 :
                     gFirmwareVbr && gNativeOversizedPicture ? (outputQp <= 25 ? 4000 : 1000) :
                     gNativeOversizedPicture ? (input->CQP_QPValue_U8 == 20 ? 2000 : 1000) : 1234;
                 write32(stats.cpuAddress, stats.size - 64 + 8, bytes);
@@ -455,6 +468,7 @@ void exerciseSubmission(bool main10 = false, bool brc = false, bool authenticate
             input.windowFrames = input.limitFrames[0] = 2;
             input.windowMaximumRatio = 112;
             input.limitCount = 1; input.limitBits[0] = 30000;
+            if (timed) input.limitDurationNs[0] = 66666667;
         }
         assert(hevcSetRateControlInput(encoder, &input) == StatusSuccess);
         if (!authenticated) {
@@ -609,6 +623,16 @@ void exerciseSubmission(bool main10 = false, bool brc = false, bool authenticate
         assert(encoder->brcFrameId == 6);
         gNativeOversizedPicture = false;
         gNativeUnfittablePicture = true;
+    }
+    if (timed) {
+        // A completed QP51 frame can fit the real window after pacing.
+        // It must publish normally, keep its reconstruction and encode again.
+        encoder->rateInput.qp = 51;gPacedPicture = true;
+        assert(hevcSchedule(encoder, &node, &ref) == StatusSuccess);
+        assert(gTimedWaits && ref && read32(payload,936)==2000 && !encoder->submissionFailed);
+        gPacedPicture = false;
+        assert(hevcSchedule(encoder, &node, &ref) == StatusSuccess);
+        assert(ref && read32(payload,936)==1234 && !encoder->submissionFailed);
     }
     // Missing completion and an oversized QP51 result both refuse publication.
     const unsigned completedPictures = gpu.pictures;
@@ -856,6 +880,8 @@ int main() {
     }
     exerciseSubmission(false, true, true, true, false, false, false, false, 0, 0, true);
     exerciseSubmission(true, true, true, true, false, false, false, false, 0, 0, true);
+    exerciseSubmission(false, true, true, true, false, false, true, true, 0, 0, false, true);
+    exerciseSubmission(true, true, true, true, false, false, true, true, 0, 0, false, true);
     puts("PASS HEVC encode context including native VBR window retries");
     return 0;
 }

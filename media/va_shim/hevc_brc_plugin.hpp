@@ -35,6 +35,7 @@ struct RateControlInput {
     uint32_t qualityValid {};
     // Exact output budgets, independent of HuC's percentage/window fields.
     uint32_t limitCount {}, limitFrames[2] {}, limitBits[2] {};
+    uint64_t limitDurationNs[2] {};
 };
 
 inline uint32_t rateWord(const void *base, uint32_t offset) {
@@ -245,7 +246,7 @@ inline bool readRateControlImpl(const void *payload, uintptr_t caller,
         const double bytes = rateDouble(transmission, 16 + i * 8);
         const double seconds = rateDouble(transmission, 32 + i * 8);
         if (!(bytes >= 1 && bytes <= double(0xffffffffu) / 8) ||
-            !(seconds > 0 && seconds * fps <= 256))
+            !(seconds > 0 && seconds <= 256))
             return reject(RateControlReadStatus::LimitValues);
         const double rate = bytes * 8 / seconds;
         if (!(rate >= 1 && rate <= 0xffffffffu))
@@ -257,16 +258,21 @@ inline bool readRateControlImpl(const void *payload, uintptr_t caller,
             input.vbvSize = bits;
         if (maximum < input.maximumRate)
             input.maximumRate = maximum;
-        uint32_t frames = uint32_t(seconds * fps + 0.5);
-        if (!frames)
-            return reject(RateControlReadStatus::LimitWindow);
+        // HuC accepts a bounded picture-count hint. Keep the actual time
+        // window separately: instantaneous FPS may be below one or spike.
+        const double pictures = seconds * fps;
+        uint32_t frames = pictures < 1 ? 1 : pictures > 256 ? 256 : uint32_t(pictures + 0.5);
         if (!input.windowFrames || frames < input.windowFrames)
             input.windowFrames = frames;
         // Cover the requested duration conservatively with whole pictures.
-        uint32_t exactFrames = uint32_t(seconds * fps);
-        if (double(exactFrames) < seconds * fps) ++exactFrames;
+        uint32_t exactFrames = pictures >= 256 ? 256 : uint32_t(pictures);
+        if (exactFrames < 256 && exactFrames < pictures) ++exactFrames;
         input.limitFrames[i] = exactFrames;
         input.limitBits[i] = bits;
+        const double nanoseconds = seconds * 1000000000.0;
+        uint64_t duration = uint64_t(nanoseconds);
+        if (double(duration) < nanoseconds) ++duration;
+        input.limitDurationNs[i] = duration;
     }
     if (input.windowFrames && input.targetRate) {
         input.windowMaximumRatio = uint32_t(uint64_t(input.maximumRate) * 100 /

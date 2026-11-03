@@ -2196,9 +2196,11 @@ bool prepareBrcInit(HevcEncodeContext *encoder, const HevcPictureDesc &picture) 
         budget.fpsNumerator = input.frameRateNumerator;
         budget.fpsDenominator = input.frameRateDenominator;
         budget.windowCount = input.limitCount;
+        budget.timed = gOps.monotonicTime && gOps.waitUntil;
         if (budget.windowCount > 2) return false;
         for (uint32_t i = 0; i < budget.windowCount; ++i)
-            budget.windows[i] = {input.limitFrames[i], input.limitBits[i]};
+            budget.windows[i] = {input.limitFrames[i], input.limitBits[i], input.limitDurationNs[i]};
+        if (budget.timed && !encoder->vbrBudget.advance(gOps.monotonicTime())) return false;
         if (!encoder->vbrBudget.configure(budget)) return false;
     }
     if (encoder->brcInitialized &&
@@ -2436,8 +2438,6 @@ bool prepareAllIntraVbrRetry(HevcEncodeContext *encoder, HevcPictureDesc &pictur
 bool finishNativeVbrPicture(HevcEncodeContext *encoder, HevcPictureDesc &picture,
     uint32_t &fence) {
     const auto fail = [encoder]() { encoder->submissionFailed = true; return false; };
-    const uint32_t available = encoder->vbrBudget.availableBits();
-    if (!available) return fail();
     const bool native = nativeVbrRateMode(encoder);
     if (!native) {
         // A second update that declines repacking may leave the SLB empty.
@@ -2450,9 +2450,23 @@ bool finishNativeVbrPicture(HevcEncodeContext *encoder, HevcPictureDesc &picture
         picture.buffers.statistics.size - 64;
     while (true) {
         const uint32_t bytes = read32(completion, 8);
-        if (!bytes || bytes > picture.buffers.bitstream.size) return fail();
+        if (!bytes || bytes > picture.buffers.bitstream.size || bytes > UINT32_MAX / 8) return fail();
+        const bool timed = gOps.monotonicTime && gOps.waitUntil;
+        const uint64_t now = timed ? gOps.monotonicTime() : 0;
+        if (timed && !encoder->vbrBudget.advance(now)) return fail();
+        const uint32_t available = encoder->vbrBudget.availableBits();
         if (uint64_t(bytes) * 8 <= available) return true;
-        if (picture.qpY >= 51) return fail();
+        if (picture.qpY >= 51) {
+            const uint64_t deadline = encoder->vbrBudget.nextTimeFor(bytes * 8);
+            if (!timed || deadline == UINT64_MAX || deadline <= now) {
+                logMessage("VBR picture cannot fit the requested window");
+                return fail();
+            }
+            logValue("VBR pacing frame bits", bytes * 8);
+            logValue("VBR pacing available bits", available);
+            if (gOps.waitUntil(deadline) != StatusSuccess) return fail();
+            continue;
+        }
         ++picture.qpY;
         logValue("VBR budget retry QP", picture.qpY);
         logValue("VBR budget available bits", available);
@@ -3847,6 +3861,11 @@ static int32_t schedulePicture(void *context, const CommandNode *command,
                 }
             }
             const uint32_t bytes = read32(completion, 8);
+            if (picture.rateControlEnabled && vbrRateMode(encoder) && gOps.monotonicTime &&
+                !encoder->vbrBudget.advance(gOps.monotonicTime())) {
+                encoder->submissionFailed = true;
+                return StatusNotFound;
+            }
             if (!publishPictureResult(encoder, command->payload, refCon, bytes,
                     picture.buffers.bitstream.size, fence)) {
                 encoder->submissionFailed = true;

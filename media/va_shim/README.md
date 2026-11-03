@@ -59,14 +59,16 @@ Rate or quality changes must be made after draining queued pictures. VBR keeps
 the output already inside a bitrate window when rates or limits change.
 
 `DataRateLimits` accepts up to two byte/second window pairs, each spanning at
-most 256 frames. Limits can reduce the effective average bitrate passed by
+most 256 seconds. Limits can reduce the effective average bitrate passed by
 the native plug-in. Without explicit limits, VBR uses a maximum rate twice
 the target and a two-second VBV budget; CBR uses the target as its maximum.
 VBR follows the requested average bitrate for intra-only and single-reference
 encoding and checks each completed picture against the VBV and explicit byte
-windows. Fractional VBR window durations are
-rounded up to whole pictures while retaining their exact byte budget. Startup
-and low-detail content can differ from the target average. A window too small
+windows using monotonic elapsed time. Fractional window durations retain their
+exact time and byte budgets as capture rates change. Temporary budget pressure
+first increases QP, then paces a completed picture until its budget recovers.
+The frame is published with its reconstruction and completion signal intact.
+Startup and low-detail content can differ from the target average. A window too small
 for a picture within the supported QP range stops that session's submissions.
 
 Once BRC work has started, a failed submission stops that encode context.
@@ -97,7 +99,7 @@ limits, 8-bit/Main10 surface states and parameter-set cache invalidation,
 guarded native rate/quality inputs, software CBR properties and session isolation,
 BRC DMEM/SLB layouts, reference feedback,
 adaptive-QP controls, the guarded Main10 profile adapter and the output byte-range/fence
-contract. They do not establish hardware
+contract, variable/low FPS windows and recoverable output pacing. They do not establish hardware
 encoding support or image quality.
 
 The shim also preserves native H.264 hardware encoding when an unavailable

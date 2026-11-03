@@ -11,6 +11,7 @@ Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphi
 
 ### Fixed
 
+- Keep HEVC bitrate windows on monotonic elapsed time under variable capture rates on Sequoia 15.8.2. Accept low-FPS time windows and pace completed output through temporary budget pressure, preserving native completion and reference feedback.
 - Select HEVC hardware submission, inter prediction, Main10 and rate control from software requests without feature markers on Sequoia 15.8.2. Add per-session `ConstantBitRate` property support and capability discovery for CBR; refuse bitrate requests when HuC is unavailable.
 - Preserve native H.264 hardware encoder initialization when an optional image converter is unavailable on Sequoia 15.8.2.
 - Fix high-resolution HEVC hangs and surface addressing with GPU pitches, consistent coded dimensions and resolution-dependent PAK/CU buffers. Preserve the selected visible resolution with conformance-window signaling.

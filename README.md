@@ -214,7 +214,10 @@ at startup. Without authenticated HuC, bitrate requests are refused; quality-onl
 encoding uses fixed QP, with QP 26 when no quality is supplied.
 The firmware runtime currently accepts Raptor Lake-S `8086:A780`, revision 4,
 on macOS 15.8.2. VBR follows the requested average bitrate for intra-only and
-single-reference encoding and enforces explicit byte windows. Startup and low-detail content can differ from the target average.
+single-reference encoding and enforces explicit byte windows using monotonic
+elapsed time. Variable or low capture rates preserve those time windows.
+Temporary budget pressure paces completed output instead of stopping the session.
+Startup and low-detail content can differ from the target average.
 Failed BRC submissions stop the affected encode context.
 The software CBR property bridge still needs end-to-end hardware validation.
 See the shim's
