@@ -198,22 +198,25 @@ otherwise unsupported display backend.
 
 The optional `-wex-hevc-encode` argument selects the experimental HEVC encoder
 and requires a [separately built VA shim](media/va_shim/README.md). The current
-path exports 8-bit or 10-bit 4:2:0 HEVC, with CQP 26 as the default. Both input
-formats support 4K encoding. Coded padding preserves the selected visible
-resolution, including dimensions that are not multiples of eight. Pictures are
-coded as intra pictures by default; single-reference inter pictures are used only when the shim bundle's
-`MacOS` directory contains the `WEX_HEVC_P` marker. Inter prediction preserves
-native intra pictures and keyframe boundaries. Main10 requires the independent
-`WEX_HEVC_MAIN10` marker, the supported macOS 15.8.2 encoder plug-in layout,
-and a client requesting Main10 with a 10-bit biplanar input. Optional CBR, VBR
-and adaptive quality control require the independent `WEX_HEVC_BRC` marker,
-`-wex-hevc-brc` boot argument and
-[WhateverXeMediaRuntime.kext](media/firmware_runtime/README.md), built with the
-supported Intel firmware and the exact WhateverXe image used at startup.
+path exports 8-bit or 10-bit 4:2:0 HEVC. Both input formats support 4K
+encoding. Coded padding preserves the selected visible resolution, including
+dimensions that are not multiples of eight. Hardware submission, address
+resolution, single-reference inter prediction and Main10 negotiation are
+available without marker files. The software's picture and profile requests
+select these paths; native intra pictures and keyframe boundaries are preserved.
+Main10 requires the supported macOS 15.8.2 encoder plug-in layout and a client
+requesting Main10 with a 10-bit biplanar input. Software `AverageBitRate`
+requests VBR, `ConstantBitRate` requests CBR, and quality-only requests select
+adaptive QP when HuC is ready. Rate control requires the `-wex-hevc-brc` boot
+argument and [WhateverXeMediaRuntime.kext](media/firmware_runtime/README.md),
+built with the supported Intel firmware and the exact WhateverXe image used
+at startup. Without authenticated HuC, bitrate requests are refused; quality-only
+encoding uses fixed QP, with QP 26 when no quality is supplied.
 The firmware runtime currently accepts Raptor Lake-S `8086:A780`, revision 4,
 on macOS 15.8.2. VBR follows the requested average bitrate for intra-only and
 single-reference encoding and enforces explicit byte windows. Startup and low-detail content can differ from the target average.
 Failed BRC submissions stop the affected encode context.
+The software CBR property bridge still needs end-to-end hardware validation.
 See the shim's
 [configuration and limits](media/va_shim/README.md#configuration).
 Keep the experimental boot arguments disabled for normal use.

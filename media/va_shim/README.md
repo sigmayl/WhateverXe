@@ -3,14 +3,10 @@
 This user-space wrapper loads the shipped `AppleIntelTGLGraphicsVADriver`,
 forwards its AVD interface, and supplies an experimental HEVC encode context.
 It is separate from the kexts and provides 8-bit or Main10 hardware encoding,
-with CQP 26 as the default and optional CBR, VBR and adaptive quality control.
-Main10 requires a client requesting that profile and a 10-bit
-biplanar input, the supported macOS 15.8.2 encoder plug-in layout, and the
-`WEX_HEVC_MAIN10` marker in the bundle's `MacOS` directory.
-Pictures are coded as intra pictures by default; the bundle's `MacOS`
-directory must contain the `WEX_HEVC_P` marker for single-reference inter
-pictures to be used. Inter prediction preserves native intra pictures and
-keyframe boundaries.
+with software-selected CBR, VBR and adaptive quality control. Main10 requires
+a client requesting that profile with a 10-bit biplanar input and the supported
+macOS 15.8.2 encoder plug-in layout. Single-reference inter prediction follows
+the native picture requests and preserves intra pictures and keyframe boundaries.
 
 The submission adapter accepts the supported 16.0.32 VA driver layout. The
 kernel's existing driver and physical-device admission guards still apply.
@@ -29,36 +25,36 @@ processing contexts are refused so the caller can use its conversion fallback.
   picture order count so display order survives reordering.
 - True B pictures (two different references), multiple slices, SAO and
   deblocking are not implemented.
-- Capabilities are gated by empty marker files next to the installed shim in the
-  bundle's `MacOS` directory: `WEX_HEVC_P` enables inter pictures (without it
-  every picture is coded as I), `WEX_HEVC_MAIN10` enables Main10 input and
-  profile negotiation, and `WEX_HEVC_COMMANDS` / `WEX_HEVC_ADDRESSES`
-  are required for the encoder to submit real work at all.
+- The software CBR property bridge has CPU and native ABI coverage; end-to-end
+  VideoToolbox CBR on hardware still needs validation.
 - Each picture has a hardware completion tag. A fence released after a GPU
   reset is treated as failure, and that context stops submitting pictures.
 
 ## Configuration
 
-The HEVC encoder reads empty marker files from
-`/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS`.
-`WEX_HEVC_COMMANDS` and `WEX_HEVC_ADDRESSES` are required for hardware
-submission. `WEX_HEVC_P` enables single-reference inter pictures and
-`WEX_HEVC_MAIN10` enables Main10 negotiation and 10-bit input.
+Hardware submission, GPU address resolution, inter prediction and Main10
+negotiation are available by default after the experimental HEVC path is
+selected. Software requests choose the profile, input format, picture types and
+rate-control mode. These features do not require marker files.
 
-`WEX_HEVC_BRC` enables HuC rate/quality control and requires the
+HuC rate/quality control requires the
 [firmware runtime](../firmware_runtime/README.md) with `-wex-hevc-brc` at startup.
 Its firmware, driver and physical-device guards apply independently of the
 shim's profile guards.
 
-| Markers in addition to `WEX_HEVC_BRC` | Control mode |
+| Software property | Control mode |
 | --- | --- |
-| None, with `AverageBitRate` set | VBR |
-| `WEX_HEVC_CBR` | CBR using `AverageBitRate` |
-| `WEX_HEVC_ACQP`, or no `AverageBitRate` | Adaptive QP using `Quality` |
+| `AverageBitRate` with a positive bits/second value | VBR |
+| `ConstantBitRate` with a positive integer bits/second value | CBR |
+| Quality only, without a bitrate request | Adaptive QP when HuC is ready; fixed QP otherwise |
 
-Use at most one of `WEX_HEVC_CBR` and `WEX_HEVC_ACQP`. Quality is normalized
-from 0 to 1; higher values select lower QP within the firmware's supported
-10–51 range. Explicit ACQP gives Quality priority over bitrate settings.
+The admitted encoder's supported-property query advertises `ConstantBitRate`
+when HuC is authenticated. Its value and mode are stored separately for each
+encoder session. Setting `AverageBitRate` selects VBR; setting `ConstantBitRate`
+selects CBR. Clearing `ConstantBitRate` clears the bitrate request. Quality is
+normalized from 0 to 1; higher values select lower QP within the firmware's
+supported 10–51 range. A quality-only request without HuC uses fixed QP; without
+a quality value, the fixed-QP default is 26.
 Rate or quality changes must be made after draining queued pictures. VBR keeps
 the output already inside a bitrate window when rates or limits change.
 
@@ -75,8 +71,9 @@ for a picture within the supported QP range stops that session's submissions.
 
 Once BRC work has started, a failed submission stops that encode context.
 The constant-QP path operates independently of HuC. Missing authentication or
-unsupported parameters refuse BRC submission; remove `WEX_HEVC_BRC` to select
-the CQP path. Main10 and inter pictures have independent markers in both modes.
+unsupported parameters refuse a software bitrate request rather than silently
+ignoring its budget. Diagnostic marker files in the installed shim's `MacOS`
+directory are optional and are not part of normal capability selection.
 
 The optional `-wex-hevc-encode` boot argument selects this experimental path
 and requires a separately built shim. Keep it disabled for normal use. See the
@@ -97,7 +94,8 @@ CPU tests cover packet layouts and order, resolution-dependent PAK/CU buffer
 capacity, coded and visible picture dimensions, GPU surface pitches, isolated HCP scratch regions, surface
 rebinding, resource tokens, first-frame preparation, matching SPS/HCP transform
 limits, 8-bit/Main10 surface states and parameter-set cache invalidation,
-guarded native rate/quality inputs, BRC DMEM/SLB layouts, reference feedback,
+guarded native rate/quality inputs, software CBR properties and session isolation,
+BRC DMEM/SLB layouts, reference feedback,
 adaptive-QP controls, the guarded Main10 profile adapter and the output byte-range/fence
 contract. They do not establish hardware
 encoding support or image quality.

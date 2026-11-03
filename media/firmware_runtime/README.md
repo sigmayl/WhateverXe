@@ -44,8 +44,8 @@ Install the runtime in the bootloader's kext list after WhateverXe and use:
 -allow3d -disablegfxfirmware -wex-hevc-encode -wex-hevc-brc
 ```
 
-`-wex-hevc-brc` enables this optional firmware component. The VA shim's
-independent `WEX_HEVC_BRC` marker enables bitrate/quality control; see its
+`-wex-hevc-brc` enables this optional firmware component. The VA shim selects
+bitrate/quality control from software requests after HuC authentication; see its
 [configuration](../va_shim/README.md#configuration).
 
 After startup, run the read-only status utility:

@@ -27,6 +27,8 @@ enum class RateControlReadStatus : uint32_t {
 
 struct RateControlInput {
     uint32_t mode {}; // plug-in mode: 0 constant QP, 1 VBR
+    uintptr_t configuration {}; // borrowed native configuration identity; never dereferenced
+    bool constantBitRate {}; // explicit per-session software property
     uint32_t targetRate {}, maximumRate {}, vbvSize {}, initialFullness {};
     uint32_t frameRateNumerator {}, frameRateDenominator {}, gopSize {}, qp {};
     uint32_t windowFrames {}, windowMaximumRatio {};
@@ -175,6 +177,7 @@ inline bool readRateControlImpl(const void *payload, uintptr_t caller,
         ratePointer(control, 0) != base + (input.mode ? kVbrVtable : kConstantQpVtable) ||
         !ratePointer(control, 8))
         return reject(RateControlReadStatus::RateController);
+    input.configuration = ratePointer(control, 8);
     // The controller owns its rate object at +703192. Rate +8 borrows the
     // original configuration passed to sub_C326, whereas helper +40 points
     // to the controller's copy; those pointers intentionally differ. Check

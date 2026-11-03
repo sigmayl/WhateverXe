@@ -3,6 +3,7 @@
 // next to this dylib as OriginalVA; all non-HEVC calls are forwarded to it.
 #include "hevc_context.hpp"
 #include "hevc_plugin.hpp"
+#include "hevc_properties.hpp"
 #include "va_shim_core.hpp"
 
 #include <stdint.h>
@@ -17,6 +18,8 @@ extern "C" unsigned long pthread_get_stacksize_np(void *thread);
 extern "C" long write(int fd, const void *buffer, unsigned long count);
 extern "C" int open(const char *path, int flags, ...);
 extern "C" int close(int fd);
+extern "C" uint32_t mach_task_self_;
+extern "C" int vm_protect(uint32_t, uintptr_t, unsigned long, int, int);
 // The encoder XPC service cannot reach the ASL client behind plain syslog();
 // Apple's compatibility entry point is what the plug-in itself uses.
 extern "C" void syslogExt(int priority, const char *format, ...)
@@ -393,6 +396,75 @@ void locatePluginCompletionSignal() {
     logMessage("HEVC encoder plug-in not loaded");
 }
 
+VaShim::HevcProperties::Bridge gProperties;
+VaShim::HevcProperties::Tables gPropertyTables;
+uint8_t gPropertyInstallLock;
+bool gPropertiesInstalled;
+int32_t propertySet(void *owner, const void *key, const void *value) {
+    return gProperties.set(owner, key, value);
+}
+int32_t propertyCopy(void *owner, const void *key, void *allocator, void **out) {
+    return gProperties.copy(owner, key, allocator, out);
+}
+int32_t propertySupported(void *owner, void **out) {
+    return gProperties.supported(owner, out);
+}
+void propertyFinalize(void *owner) { gProperties.finalize(owner); }
+
+bool installProperties() {
+    while (__atomic_test_and_set(&gPropertyInstallLock, __ATOMIC_ACQUIRE)) {}
+    struct Unlock { ~Unlock() { __atomic_clear(&gPropertyInstallLock, __ATOMIC_RELEASE); } } unlock;
+    if (__atomic_load_n(&gPropertiesInstalled, __ATOMIC_ACQUIRE)) return true;
+    const auto *image = reinterpret_cast<const uint8_t *>(gPluginImageBase);
+    if (!VaShim::HevcProperties::buildTables(image, gKnownDriverBuild,
+            gPropertyTables, propertySet, propertyCopy, propertySupported, propertyFinalize))
+        return false;
+    auto &ops = gProperties.ops;
+    void *scope = reinterpret_cast<void *>(-2);
+    ops.storage = reinterpret_cast<decltype(ops.storage)>(dlsym(scope, "CMBaseObjectGetDerivedStorage"));
+    ops.equal = reinterpret_cast<decltype(ops.equal)>(dlsym(scope, "CFEqual"));
+    ops.type = reinterpret_cast<decltype(ops.type)>(dlsym(scope, "CFGetTypeID"));
+    ops.numberType = reinterpret_cast<decltype(ops.numberType)>(dlsym(scope, "CFNumberGetTypeID"));
+    ops.numberValue = reinterpret_cast<decltype(ops.numberValue)>(dlsym(scope, "CFNumberGetValue"));
+    ops.number = reinterpret_cast<decltype(ops.number)>(dlsym(scope, "CFNumberCreate"));
+    ops.dictionaryCopy = reinterpret_cast<decltype(ops.dictionaryCopy)>(dlsym(scope, "CFDictionaryCreateMutableCopy"));
+    ops.dictionaryGet = reinterpret_cast<decltype(ops.dictionaryGet)>(dlsym(scope, "CFDictionaryGetValue"));
+    ops.dictionarySet = reinterpret_cast<decltype(ops.dictionarySet)>(dlsym(scope, "CFDictionarySetValue"));
+    ops.release = reinterpret_cast<decltype(ops.release)>(dlsym(scope, "CFRelease"));
+    ops.authenticated = hucAuthenticated;
+    auto string = reinterpret_cast<void *(*)(void *, const char *, uint32_t)>(
+        dlsym(scope, "CFStringCreateWithCString"));
+    if (!ops.storage || !ops.equal || !ops.type || !ops.numberType || !ops.numberValue ||
+        !ops.number || !ops.dictionaryCopy || !ops.dictionaryGet || !ops.dictionarySet ||
+        !ops.release || !string) return false;
+    if (!ops.constantKey) ops.constantKey = string(nullptr, "ConstantBitRate", 0x08000100);
+    if (!ops.averageKey) ops.averageKey = string(nullptr, "AverageBitRate", 0x08000100);
+    if (!ops.constantKey || !ops.averageKey) return false;
+    gProperties.originalSet = reinterpret_cast<VaShim::HevcProperties::Set>(gPluginImageBase + 0x48bc);
+    gProperties.originalCopy = reinterpret_cast<VaShim::HevcProperties::Copy>(gPluginImageBase + 0x42c9);
+    gProperties.originalSupported = reinterpret_cast<VaShim::HevcProperties::Supported>(gPluginImageBase + 0x6b17);
+    gProperties.originalFinalize = reinterpret_cast<VaShim::HevcProperties::Finalize>(gPluginImageBase + 0x411f);
+    // The class records outlive individual sessions. Keep their callbacks
+    // resident before publishing pointers into this image.
+    DlInfo own {};
+    if (!dladdr(reinterpret_cast<const void *>(&installProperties), &own) ||
+        !own.filename || !dlopen(own.filename, kRTLDLazy | kRTLDLocal | 0x80)) return false;
+    const uintptr_t page = (gPluginImageBase + 0x338d8) & ~uintptr_t(4095);
+    if (vm_protect(mach_task_self_, page, 4096, 0, 0x13)) return false;
+    auto *baseSlot = reinterpret_cast<uintptr_t *>(gPluginImageBase + 0x338e0);
+    auto *encoderSlot = reinterpret_cast<uintptr_t *>(gPluginImageBase + 0x338e8);
+    __atomic_store_n(baseSlot, reinterpret_cast<uintptr_t>(gPropertyTables.base), __ATOMIC_RELEASE);
+    __atomic_store_n(encoderSlot, reinterpret_cast<uintptr_t>(gPropertyTables.encoder), __ATOMIC_RELEASE);
+    if (vm_protect(mach_task_self_, page, 4096, 0, 1)) {
+        __atomic_store_n(baseSlot, gPluginImageBase + 0x338f0, __ATOMIC_RELEASE);
+        __atomic_store_n(encoderSlot, gPluginImageBase + 0x3394c, __ATOMIC_RELEASE);
+        return false;
+    }
+    __atomic_store_n(&gPropertiesInstalled, true, __ATOMIC_RELEASE);
+    logMessage("software ConstantBitRate property installed for admitted HEVC plug-in");
+    return true;
+}
+
 void signalPluginCompletion() {
     if (!gPluginCompletionSignal)
         locatePluginCompletionSignal();
@@ -721,15 +793,11 @@ int32_t schedule(void *, void *driver, void *commandList, void *refCon,
         void *entry = nullptr;
         if (refCons && refCons->entries && i < refCons->count)
             entry = &refCons->entries[i];
-        if (getenv("WEX_HEVC_PAYLOAD") || hevcMarker(
-                "/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS/WEX_HEVC_PAYLOAD") ||
-            (hevcMarker("/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS/WEX_HEVC_BRC_INIT") ||
-                hevcMarker("/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS/WEX_HEVC_BRC"))) {
+        {
             locatePluginCompletionSignal();
             VaShim::HevcPlugin::RateControlInput input;
             VaShim::HevcPlugin::RateControlReadStatus reason;
-            const bool repairIntra = hevcMarker(
-                "/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS/WEX_HEVC_BRC");
+            const bool repairIntra = hucAuthenticated() == 1;
             const auto readRate = repairIntra ? VaShim::HevcPlugin::prepareRateControl
                 : VaShim::HevcPlugin::readRateControl;
             VaShim::HevcPlugin::FrameBounds frameBounds;
@@ -749,12 +817,15 @@ int32_t schedule(void *, void *driver, void *commandList, void *refCon,
             const bool valid = readRate(node->payload,
                 caller, reinterpret_cast<const uint8_t *>(gPluginImageBase),
                 gKnownDriverBuild, true, malloc_size, input, &reason, nativeFrame, &frameBounds,
-                hevcMarker("/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS/WEX_HEVC_ACQP"));
+                false);
             logPointer("BRC plugin caller", reinterpret_cast<void *>(caller));
             logPointer("BRC plugin image", reinterpret_cast<void *>(gPluginImageBase));
+            if (valid) input.constantBitRate = __atomic_load_n(&gPropertiesInstalled, __ATOMIC_ACQUIRE) &&
+                gProperties.constantFor(input.configuration);
             VaShim::hevcSetRateControlInput(context, valid ? &input : nullptr);
             logDecimal("BRC plugin input valid", valid);
             logDecimal("BRC plugin input status", static_cast<uint32_t>(reason));
+            if (!valid) return VaShim::StatusNotFound;
             if (valid) {
                 logDecimal("BRC plugin mode", input.mode);
                 logDecimal("BRC plugin target", input.targetRate);
@@ -897,13 +968,15 @@ int32_t AVD_CreateAVDAccelerator(void **out, const void *config, uint32_t *rende
     if (!gReady)
         return VaShim::StatusInvalid;
     const int32_t status = gShim.create(out, config, rendererId);
-    if (status == VaShim::StatusSuccess && gKnownDriverBuild &&
-        (getenv("WEX_HEVC_MAIN10") || hevcMarker(VaShim::HevcPlugin::kMain10Marker))) {
+    if (status == VaShim::StatusSuccess && gKnownDriverBuild) {
         locatePluginCompletionSignal();
         if (VaShim::HevcPlugin::enableMain10(out, rendererId, caller,
                 reinterpret_cast<const uint8_t *>(gPluginImageBase),
                 gKnownDriverBuild, true))
             logMessage("Main10 profile enabled for admitted HEVC plug-in");
+        if (caller == gPluginImageBase + VaShim::HevcPlugin::kCreateReturn &&
+            !installProperties())
+            logMessage("HEVC software CBR property layout unavailable");
     }
     return status;
 }

@@ -8,9 +8,6 @@
 namespace VaShim {
 namespace HevcPlugin {
 
-constexpr const char *kMain10Marker =
-    "/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS/WEX_HEVC_MAIN10";
-
 // AppleGVAHEVCEncoder, macOS 15.8.2. IDA shows that CreateAVDAccelerator's
 // output slot is member +8 of the 912-byte AVD_Dispatch object, and the
 // renderer output is member +24. The plug-in copies the registry's HEVC

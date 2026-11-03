@@ -109,8 +109,8 @@ int32_t hevcSetContextParam(void *context, const ContextParamEntry *entry);
 int32_t hevcGetContextParam(void *context, const ContextParamEntry *entry);
 
 // Schedule for one command node. Parses the picture payload, binds the input
-// and reconstruction surfaces, builds the Gen12 VDEnc/HCP sequence and either
-// submits it (WEX_HEVC_COMMANDS) or submits the placeholder batch.
+// and reconstruction surfaces, builds the Gen12 VDEnc/HCP sequence, resolves
+// its GPU resources and submits the picture sequence.
 // refCon is the address of the caller's output pointer slot. On success it
 // receives a context-owned render/media fence record, as in the native driver.
 int32_t hevcSchedule(void *context, const CommandNode *command, void *refCon);

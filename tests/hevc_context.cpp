@@ -54,15 +54,13 @@ char gLastLine[256];
 char gBrcLines[4096];
 unsigned gBrcLineBytes;
 bool gMockMain10;
-bool gMain10Marker;
 bool gMockReconEightBit;
 bool gMockShortPitch;
-bool gBrcInitMarker;
-bool gInterMarker;
 bool gNativeVbr;
 bool gFirmwareVbr;
 unsigned gBrcFailureStage;
-bool gCbrMarker;
+bool gCbrRequest;
+bool gQualityRequest;
 bool gNativeOversizedPicture;
 bool gNativeUnfittablePicture;
 bool gHucAuthenticated {true};
@@ -180,7 +178,7 @@ void exerciseHeaderCache() {
     free(encoder.sliceHeader);
 }
 
-bool gBrcUpdateMarker = false;
+bool gRateUpdates = false;
 bool gMockBrcReencode = false;
 
 void exerciseBrcPictureData() {
@@ -244,17 +242,17 @@ void exerciseBrcPictureData() {
 void exerciseSubmission(bool main10 = false, bool brc = false, bool authenticated = true,
     bool update = false, bool reencode = false, bool classification = false,
     bool nativeBudget = false, bool lowNativeQp = false, unsigned firmwareVbr = 0,
-    unsigned failureStage = 0) {
+    unsigned failureStage = 0, bool quality = false) {
+    update = brc; // Software rate requests automatically run the complete BRC path.
     gMockMain10 = main10;
-    gMain10Marker = false;
-    gBrcInitMarker = brc;
-    gBrcUpdateMarker = update;
+    gRateUpdates = update;
     gMockBrcReencode = reencode;
-    gInterMarker = classification || nativeBudget || firmwareVbr == 1;
     gNativeVbr = nativeBudget;
     gFirmwareVbr = firmwareVbr;
     gBrcFailureStage = failureStage;
-    gCbrMarker = update && !nativeBudget && !firmwareVbr;
+    gQualityRequest = quality;
+    gNativeUnfittablePicture = false;
+    gCbrRequest = update && !nativeBudget && !firmwareVbr && !quality;
     gBrcLineBytes = 0;
     gBrcLines[0] = 0;
     gHucAuthenticated = authenticated;
@@ -301,14 +299,7 @@ void exerciseSubmission(bool main10 = false, bool brc = false, bool authenticate
         return reinterpret_cast<void *>(0x80000000ul +
             plane * (gMockMain10 ? 1280ul : 640ul) * 384);
     };
-    ops.debugMarker = [](const char *path) -> int32_t {
-        return strstr(path, "WEX_HEVC_COMMANDS") || strstr(path, "WEX_HEVC_ADDRESSES") ||
-            (gBrcInitMarker && strstr(path, "WEX_HEVC_BRC_INIT")) ||
-            (gBrcUpdateMarker && !strcmp(strrchr(path, '/') + 1, "WEX_HEVC_BRC")) ||
-            (gInterMarker && !strcmp(strrchr(path, '/') + 1, "WEX_HEVC_P")) ||
-            (gCbrMarker && !strcmp(strrchr(path, '/') + 1, "WEX_HEVC_CBR")) ||
-            (gMain10Marker && strstr(path, "WEX_HEVC_MAIN10"));
-    };
+    ops.debugMarker = nullptr; // No functional or diagnostic markers installed.
     ops.hucAuthenticated = []() -> int32_t { return gHucAuthenticated ? 1 : 0; };
     ops.request = [](void *context, uint32_t words, uint32_t aux, void **out) -> int32_t {
         auto &m = *static_cast<MockSubmission *>(context);
@@ -344,16 +335,16 @@ void exerciseSubmission(bool main10 = false, bool brc = false, bool authenticate
             if (m.batch[6] == HevcCore::Huc::kHevcBrcInitKernel) {
                 const auto *input = static_cast<const HevcCore::Huc::BrcInitDmem *>(dmem.cpuAddress);
                 assert(input->FrameWidth_U16 == 640 && input->FrameHeight_U16 == 360);
-                assert(input->TargetBitrate_U32 == (gNativeVbr ? 400000u : 4000000u) &&
-                    input->BRCFlag == (gNativeVbr ? 0 : (gCbrMarker ? 1 : 2)));
+                assert(input->TargetBitrate_U32 == (gQualityRequest ? 0u : gNativeVbr ? 400000u : 4000000u) &&
+                    input->BRCFlag == (gNativeVbr || gQualityRequest ? 0 : (gCbrRequest ? 1 : 2)));
                 assert(input->FrameRateM_U32 == 30 && input->FrameRateD_U32 == 1);
             } else {
-                assert(m.batch[6] == HevcCore::Huc::kHevcBrcUpdateKernel && gBrcUpdateMarker);
+                assert(m.batch[6] == HevcCore::Huc::kHevcBrcUpdateKernel && gRateUpdates);
                 const auto *input = static_cast<const HevcCore::Huc::BrcUpdateDmem *>(dmem.cpuAddress);
                 assert(input->CurrentPass_U8 <= 1 && input->FrameID_U32 == m.encoder->brcFrameId);
-                assert(input->MaxNumPass_U8 == (gNativeVbr ? 1 : 2));
+                assert(input->MaxNumPass_U8 == (gNativeVbr || gQualityRequest ? 1 : 2));
                 assert(input->TARGETSIZE_U32 == (gNativeVbr ? 22500u : 6000000u) &&
-                    (gNativeVbr ? input->CQP_QPValue_U8 >= 10 : input->CQP_QPValue_U8 == 26));
+                    (gNativeVbr ? input->CQP_QPValue_U8 >= 10 : input->CQP_QPValue_U8 == (gQualityRequest ? 20 : 26)));
                 const auto &source = m.encoder->scratch.aggregatedStats;
                 const auto &output = m.encoder->scratch.secondLevel;
                 const auto *constants = reinterpret_cast<const HevcCore::Huc::BrcConstantData *>(
@@ -406,7 +397,7 @@ void exerciseSubmission(bool main10 = false, bool brc = false, bool authenticate
                 if (m.batch[i] == 0x73920010)
                     ++m.referenceLists;
             }
-            if (gBrcUpdateMarker) {
+            if (gRateUpdates) {
                 const uint32_t base = 0x20000000 + 9 * 0x1000000;
                 bool pictureGroup = false, sliceGroup = false;
                 for (unsigned i = 0; i + 2 < 8192; ++i) {
@@ -447,8 +438,10 @@ void exerciseSubmission(bool main10 = false, bool brc = false, bool authenticate
     if (brc) {
         HevcPlugin::RateControlInput input;
         input.mode = 1;
+        input.constantBitRate = gCbrRequest;
         input.targetRate = 4000000; input.maximumRate = input.vbvSize = 8000000;
-        input.initialFullness = 6000000; input.gopSize = firmwareVbr == 1 ? 1 : 16; input.qp = 20;
+        input.initialFullness = 6000000; input.gopSize = firmwareVbr ? 1 : 16; input.qp = 20;
+        if (quality) { input.mode = 0; input.targetRate = input.maximumRate = 0; }
         if (lowNativeQp)
             input.qp = 0;
         input.frameRateNumerator = 30; input.frameRateDenominator = 1;
@@ -467,17 +460,15 @@ void exerciseSubmission(bool main10 = false, bool brc = false, bool authenticate
         if (!authenticated) {
             assert(hevcSchedule(encoder, &node, &ref) == StatusNotFound);
             assert(!ref && !encoder->brcInitialized && !gpu.hucSubmits && !gpu.pictures);
-            // Missing authentication aborts HuC work; disabling the independent
-            // probe still allows this context to encode the CQP baseline.
-            gBrcInitMarker = false;
-            gBrcUpdateMarker = false;
+            // A bitrate request cannot silently fall back to CQP. Software
+            // can explicitly switch to a quality-only request without HuC.
+            input.mode = 0; input.constantBitRate = false; input.qp = 26;
+            assert(hevcSetRateControlInput(encoder, &input) == StatusSuccess);
+            gRateUpdates = false;
         }
     }
     if (main10) {
-        // High-depth input must never submit an unenabled experimental path.
-        assert(hevcSchedule(encoder, &node, &ref) == StatusNotFound);
-        assert(gpu.resolves == 0 && gpu.pictures == 0 && !ref);
-        gMain10Marker = true;
+        // Main10 is available without markers, but surface validation remains.
         gMockReconEightBit = true;
         assert(hevcSchedule(encoder, &node, &ref) == StatusNotFound);
         assert(gpu.resolves == 0 && gpu.pictures == 0 && !ref);
@@ -496,13 +487,13 @@ void exerciseSubmission(bool main10 = false, bool brc = false, bool authenticate
         assert(huc == (failureStage == 1 ? 1u : failureStage == 3 ? 3u : 2u));
         assert(pictures == (failureStage == 3 ? 1u : 0u));
         assert(hevcSchedule(encoder, &node, &ref) == StatusNotFound);
-        gBrcInitMarker = gBrcUpdateMarker = false;
+        gRateUpdates = false;
         assert(hevcSchedule(encoder, &node, &ref) == StatusNotFound);
         assert(gpu.requests == requests && gpu.hucSubmits == huc && gpu.pictures == pictures);
         destroyHevcEncodeContexts();
         setHevcSubmitOps({});
         gBrcFailureStage = 0;
-        gCbrMarker = gMockMain10 = gMain10Marker = false;
+        gCbrRequest = gMockMain10 = false;
         return;
     }
     // One Schedule must resolve AND encode its first picture before returning.
@@ -512,7 +503,7 @@ void exerciseSubmission(bool main10 = false, bool brc = false, bool authenticate
             main10, brc, update, gpu.hucSubmits, gBrcLines);
     assert(firstStatus == StatusSuccess);
     const unsigned repeat = update && authenticated && reencode ? 1 : 0;
-    const unsigned updatesPerPicture = update ? (nativeBudget ? 1 : 2) : 0;
+    const unsigned updatesPerPicture = update ? (nativeBudget || quality ? 1 : 2) : 0;
     assert(gpu.resolves == 1 && gpu.pictures == 1 + repeat);
     assert(gpu.hucSubmits == (brc && authenticated ? 1u + updatesPerPicture : 0u));
     assert(encoder->brcInitialized == (brc && authenticated));
@@ -578,9 +569,8 @@ void exerciseSubmission(bool main10 = false, bool brc = false, bool authenticate
         assert(hevcSchedule(encoder, &node, &ref) == StatusSuccess);
         assert(gpu.sliceType == 2 && !gpu.referenceLists && !encoder->referenceHandle);
 
-        // The independent inter marker keeps the default all-intra path.
-        gInterMarker = false;
-        write64(payload, 40, 0xc000);
+        // Software can request intra pictures by omitting L0.
+        write64(payload, 40, 0);
         write32(payload, 28, 1);
         write32(payload, 900, 2);
         write64(payload, 912, 0xe000);
@@ -632,11 +622,9 @@ void exerciseSubmission(bool main10 = false, bool brc = false, bool authenticate
     assert(gpu.pictures == completedPictures + 1);
     destroyHevcEncodeContexts();
     setHevcSubmitOps({});
-    gMockMain10 = gMain10Marker = false;
-    gBrcInitMarker = false;
-    gBrcUpdateMarker = false;
+    gMockMain10 = false;
+    gRateUpdates = false;
     gMockBrcReencode = false;
-    gInterMarker = gNativeVbr = gNativeUnfittablePicture = gCbrMarker = gFirmwareVbr = false;
 }
 
 }
@@ -866,6 +854,8 @@ int main() {
         exerciseSubmission(false, true, true, true, false, false, false, false, 0, failure);
         exerciseSubmission(true, true, true, true, false, false, false, false, 0, failure);
     }
+    exerciseSubmission(false, true, true, true, false, false, false, false, 0, 0, true);
+    exerciseSubmission(true, true, true, true, false, false, false, false, 0, 0, true);
     puts("PASS HEVC encode context including native VBR window retries");
     return 0;
 }

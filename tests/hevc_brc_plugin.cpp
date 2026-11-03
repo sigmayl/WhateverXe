@@ -71,6 +71,7 @@ int main() {
     assert(readRateControl(payload, base + kScheduleReturn, image.data(), true,
         true, allocationSize, input));
     assert(input.mode == 1 && input.qp == 33 && input.gopSize == 16);
+    assert(input.configuration == 0x12345678 && !input.constantBitRate);
     // Current frame parameters override the initial configuration.
     assert(input.targetRate == 4000000 && input.maximumRate == 8000000);
     assert(input.frameRateNumerator == 30 && input.frameRateDenominator == 1);

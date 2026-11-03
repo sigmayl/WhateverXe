@@ -557,13 +557,10 @@ bool resolvePoolBuffer(HevcEncodeContext *encoder, uint32_t poolId,
 }
 
 // The encoder XPC service runs with a sanitized environment, so launchd
-// variables never reach it. Marker files next to the installed shim opt into
-// the experimental paths instead; the environment variables still work when
-// the process inherits the caller's environment.
+// variables never reach it. Optional diagnostic markers next to the installed
+// shim remain available; normal capability selection follows software requests.
 constexpr const char *kAllocMarker =
     "/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS/WEX_HEVC_ALLOC";
-constexpr const char *kCommandsMarker =
-    "/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS/WEX_HEVC_COMMANDS";
 constexpr const char *kBuildMarker =
     "/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS/WEX_HEVC_BUILD";
 constexpr const char *kDumpMarker =
@@ -582,10 +579,6 @@ constexpr const char *kSliceEndMarker =
     "/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS/WEX_HEVC_SLICEEND";
 constexpr const char *kPartialFrameMarker =
     "/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS/WEX_HEVC_PFU";
-constexpr const char *kResolveMarker =
-    "/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS/WEX_HEVC_RESOLVE";
-constexpr const char *kAddressesMarker =
-    "/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS/WEX_HEVC_ADDRESSES";
 // Submits a sentinel-only batch once the addresses are known. It isolates the
 // engine execution path from the HCP/VDEnc command contents.
 constexpr const char *kPingMarker =
@@ -659,11 +652,6 @@ constexpr const char *kQpMidMarker =
     "/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS/WEX_HEVC_QP40";
 constexpr const char *kQpLowMarker =
     "/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS/WEX_HEVC_QP10";
-// Codes non-I pictures as P slices that predict from the plug-in's list 0
-// reference. The reference address comes from the recon surface cache, so a
-// picture whose reference was never encoded falls back to an I slice.
-constexpr const char *kInterMarker =
-    "/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS/WEX_HEVC_P";
 // Diagnostic: zero the shared HCP/VDEnc scratch (line buffers, temporal MV,
 // tile row store, cumulative CU count) before the picture, instead of leaving
 // whatever the previous picture stored there. A real driver allocates those
@@ -2153,19 +2141,13 @@ bool submitBrcKernel(HevcEncodeContext *encoder, const HevcPictureDesc &picture,
 // Every VBR mode checks completed output against the same byte budgets.
 bool vbrRateMode(const HevcEncodeContext *encoder) {
     return encoder->rateInputValid && encoder->rateInput.mode == 1 &&
-        experimentalEnabled("WEX_HEVC_BRC",
-            "/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS/WEX_HEVC_BRC") &&
-        !experimentalEnabled("WEX_HEVC_CBR",
-            "/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS/WEX_HEVC_CBR") &&
-        !experimentalEnabled("WEX_HEVC_ACQP",
-            "/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS/WEX_HEVC_ACQP");
+        !encoder->rateInput.constantBitRate;
 }
 
 // HuC controls all-intra sessions. Native frame-QP tracking applies to
 // inter GOPs, where the admitted controller receives its reference feedback.
 bool nativeVbrRateMode(const HevcEncodeContext *encoder) {
-    return vbrRateMode(encoder) && encoder->rateInput.gopSize > 1 &&
-        experimentalEnabled("WEX_HEVC_P", kInterMarker);
+    return vbrRateMode(encoder) && encoder->rateInput.gopSize > 1;
 }
 
 bool prepareBrcInit(HevcEncodeContext *encoder, const HevcPictureDesc &picture) {
@@ -2178,12 +2160,8 @@ bool prepareBrcInit(HevcEncodeContext *encoder, const HevcPictureDesc &picture) 
     const auto &input = encoder->rateInput;
     HevcCore::Huc::BrcInitParams params;
     params.mode = input.mode ? HevcCore::Huc::BrcMode::Vbr : HevcCore::Huc::BrcMode::Acqp;
-    if (experimentalEnabled("WEX_HEVC_CBR",
-            "/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS/WEX_HEVC_CBR"))
+    if (input.constantBitRate && input.mode == 1)
         params.mode = HevcCore::Huc::BrcMode::Cbr;
-    if (experimentalEnabled("WEX_HEVC_ACQP",
-            "/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS/WEX_HEVC_ACQP"))
-        params.mode = HevcCore::Huc::BrcMode::Acqp;
     const bool nativeVbr = nativeVbrRateMode(encoder);
     if (nativeVbr) {
         if (!input.targetRate || input.maximumRate < input.targetRate) return false;
@@ -2196,7 +2174,7 @@ bool prepareBrcInit(HevcEncodeContext *encoder, const HevcPictureDesc &picture) 
     params.vbvSize = input.vbvSize; params.initialFullness = input.initialFullness;
     params.frameRateNumerator = input.frameRateNumerator;
     params.frameRateDenominator = input.frameRateDenominator;
-    params.gopSize = experimentalEnabled("WEX_HEVC_P", kInterMarker) ? input.gopSize : 1;
+    params.gopSize = input.gopSize;
     // A native frame-QP change must not restart HuC's sequence history.
     // Explicit quality control still reinitializes when its QP changes.
     params.initialQp = !nativeVbr && params.mode == HevcCore::Huc::BrcMode::Acqp ? uint8_t(input.qp) : 26;
@@ -2881,8 +2859,7 @@ static int32_t schedulePicture(void *context, const CommandNode *command,
         *static_cast<void **>(refCon) = nullptr;
 
     if (logThis && encoder->scheduleCount == 1) {
-        logValue("env commands", experimentalEnabled("WEX_HEVC_COMMANDS",
-            kCommandsMarker) ? 1 : 0);
+        logValue("hardware submission enabled", 1);
         logValue("env alloc", experimentalEnabled("WEX_HEVC_ALLOC",
             kAllocMarker) ? 1 : 0);
         logValue("env build", experimentalEnabled("WEX_HEVC_BUILD",
@@ -2910,10 +2887,6 @@ static int32_t schedulePicture(void *context, const CommandNode *command,
     HevcPictureDesc surfaceFormatProbe;
     surfaceFormatProbe.source = encoder->inputSurface;
     if (pictureIsTenBit(surfaceFormatProbe)) {
-        if (!experimentalEnabled("WEX_HEVC_MAIN10", HevcPlugin::kMain10Marker)) {
-            logMessage("Main10 input requires WEX_HEVC_MAIN10");
-            return StatusNotFound;
-        }
         surfaceFormatProbe.source = encoder->reconSurface;
         if (!pictureIsTenBit(surfaceFormatProbe) ||
             encoder->inputSurface.pitch < uint64_t(encoder->inputSurface.width) * 2 ||
@@ -2932,15 +2905,12 @@ static int32_t schedulePicture(void *context, const CommandNode *command,
         dumpSurfaceEntry(encoder, "input");
     }
 
-    const bool submitRequested = experimentalEnabled("WEX_HEVC_COMMANDS",
-        kCommandsMarker);
+    const bool submitRequested = true;
     // Once the kernel has returned the graphics addresses, the picture
     // sequence can use them directly instead of the renderer's handles. The
     // input surface may change between frames, so the cached addresses only
     // apply while the resolved source handle still matches.
-    const bool addressesMarker = experimentalEnabled("WEX_HEVC_ADDRESSES",
-        kAddressesMarker);
-    const bool addressesEnabled = addressesMarker &&
+    const bool addressesEnabled =
         encoder->resolvedCount == kPictureResourceCount &&
         encoder->resolvedSourceHandle == encoder->inputSurface.address;
     // A sentinel-only batch proves whether the media engine runs the submitted
@@ -2950,9 +2920,7 @@ static int32_t schedulePicture(void *context, const CommandNode *command,
     // The resolve probe takes precedence over the picture sequence: it submits
     // MI_BATCH_BUFFER_END with a VDENC token so the kernel fills in the real
     // graphics addresses, which user space cannot obtain by itself.
-    const bool resolveRequested = !addressesEnabled &&
-        (experimentalEnabled("WEX_HEVC_RESOLVE", kResolveMarker) ||
-         addressesMarker);
+    const bool resolveRequested = !addressesEnabled;
     if (resolveRequested && !allowResolve)
         return StatusNotFound;
     // WEX_HEVC_BUILD assembles the sequence and resolves every buffer address
@@ -3019,8 +2987,7 @@ static int32_t schedulePicture(void *context, const CommandNode *command,
         picture.oneCtb = experimentalEnabled("WEX_HEVC_ONE_CTB",
             kOneCtbMarker);
         encoder->referenceHandle = 0;
-        if (experimentalEnabled("WEX_HEVC_P", kInterMarker) &&
-            !(picture.nalType >= 16 && picture.nalType <= 23) &&
+        if (!(picture.nalType >= 16 && picture.nalType <= 23) &&
             readPointer(payload, kPayloadRefL0Surface)) {
             // The native builder fills L0 only for inter pictures. The
             // reconstruction index can be zero on those pictures, so it is
@@ -3103,8 +3070,7 @@ static int32_t schedulePicture(void *context, const CommandNode *command,
                 }
             }
         }
-        if (experimentalEnabled("WEX_HEVC_P", kInterMarker))
-            fillReferenceSet(encoder, picture);
+        fillReferenceSet(encoder, picture);
         fillBuffers(encoder, payload, picture.buffers);
         if (addressesEnabled) {
             capturePictureHandles(encoder, picture);
@@ -3153,11 +3119,14 @@ static int32_t schedulePicture(void *context, const CommandNode *command,
         // the flag clear. The PPS signals the same flag, so the stream syntax
         // matches.
         picture.cuQpDeltaEnabled = true;
-        picture.rateControlEnabled = experimentalEnabled("WEX_HEVC_BRC",
-            "/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS/WEX_HEVC_BRC");
-        if (picture.rateControlEnabled && encoder->rateInputValid &&
-            (!encoder->rateInput.mode || nativeVbrRateMode(encoder) || experimentalEnabled("WEX_HEVC_ACQP",
-                "/Library/GPUBundles/AppleIntelICLGraphicsVADriver.bundle/Contents/MacOS/WEX_HEVC_ACQP")))
+        const bool authenticatedBrc = gOps.hucAuthenticated && gOps.hucAuthenticated() == 1;
+        if (encoder->rateInputValid && encoder->rateInput.mode && !authenticatedBrc) {
+            logMessage("software bitrate request requires authenticated HuC");
+            return StatusNotFound;
+        }
+        picture.rateControlEnabled = encoder->rateInputValid && authenticatedBrc;
+        if (encoder->rateInputValid &&
+            (!encoder->rateInput.mode || nativeVbrRateMode(encoder)))
             picture.qpY = encoder->rateInput.qp;
         if (picture.rateControlEnabled && nativeVbrRateMode(encoder) && picture.qpY < 10)
             picture.qpY = 10;
@@ -3616,7 +3585,7 @@ static int32_t schedulePicture(void *context, const CommandNode *command,
             appendHex(out, value);
             emit(gHevcLine, out);
         }
-        if (submitRequested && addressesMarker) {
+        if (submitRequested) {
             if (resolved != kPictureResourceCount)
                 return StatusNotFound;
             // Address resolution is preparation for this picture, not a

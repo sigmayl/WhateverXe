@@ -11,6 +11,7 @@ Use the latest [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphi
 
 ### Fixed
 
+- Select HEVC hardware submission, inter prediction, Main10 and rate control from software requests without feature markers on Sequoia 15.8.2. Add per-session `ConstantBitRate` property support and capability discovery for CBR; refuse bitrate requests when HuC is unavailable.
 - Preserve native H.264 hardware encoder initialization when an optional image converter is unavailable on Sequoia 15.8.2.
 - Fix high-resolution HEVC hangs and surface addressing with GPU pitches, consistent coded dimensions and resolution-dependent PAK/CU buffers. Preserve the selected visible resolution with conformance-window signaling.
 - Preserve HEVC keyframe boundaries and native frame feedback, match adaptive QP groups between the PPS and hardware, and enforce bitrate windows across startup and drained rate changes. Avoid the native all-intra VBR zero-interval failure and stop affected contexts after failed submissions. QP-group setup follows [FFmpeg VAAPI HEVC](https://github.com/FFmpeg/FFmpeg/blob/master/libavcodec/vaapi_encode_h265.c).
